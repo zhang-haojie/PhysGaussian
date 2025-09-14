@@ -37,8 +37,6 @@ from utils.transformation_utils import *
 from utils.camera_view_utils import *
 from utils.render_utils import *
 
-from sklearn.cluster import DBSCAN
-
 wp.init()
 wp.config.verify_cuda = True
 
@@ -76,11 +74,11 @@ def load_grouping_checkpoint(model_path, sh_degree=3, iteration=-1):
 
 def load_checkpoint(model_path, sh_degree=3, iteration=-1):
     # Find checkpoint
-    checkpt_dir = os.path.join(model_path, "point_cloud")
+    checkpt_dir = os.path.join(model_path, "point_cloud_removal")
     if iteration == -1:
         iteration = searchForMaxIteration(checkpt_dir)
     checkpt_path = os.path.join(
-        checkpt_dir, f"iteration_{iteration}", "point_cloud.ply"
+        checkpt_dir, f"iteration_{iteration}", "point_cloud_refined.ply"
     )
 
     # Load guassians
@@ -97,6 +95,7 @@ def get_semantic_mask(objects_dc, classifier, selected_obj_ids, removal_thresh=0
         mask3d = mask.any(dim=0).squeeze()
 
     return mask3d
+
 
 def auto_set_mpm(transformed_pos, bc_params):
     min_xyz = transformed_pos.min(dim=0)[0]      # shape: [3]
@@ -127,7 +126,7 @@ def auto_set_mpm(transformed_pos, bc_params):
             "type": "enforce_particle_translation",
             "point":  [center_x, y_max, center_z],
             "size":   [size_x, thickness, size_z],
-            "velocity": [0.0, v_down, 0.0],
+            "velocity": [0.0, v_up, 0.0],
             "start_time": t0,
             "end_time": t1
         },
@@ -135,7 +134,7 @@ def auto_set_mpm(transformed_pos, bc_params):
             "type": "enforce_particle_translation",
             "point":  [center_x, y_min, center_z],
             "size":   [size_x, thickness, size_z],
-            "velocity": [0.0, v_up, 0.0],
+            "velocity": [0.0, v_down, 0.0],
             "start_time": t0,
             "end_time": t2
         }
@@ -144,24 +143,6 @@ def auto_set_mpm(transformed_pos, bc_params):
     bc_params = [item for item in bc_params if item.get('type','')!="enforce_particle_translation"]
     bc_params += auto_conditions
     return bc_params
-
-
-def suppress_outliers(mask, points, eps=0.05, min_samples=10):
-    '''
-    mask: bool numpy array (N,)
-    points: numpy array (N,3) 或 torch tensor (N,3)
-    返回：新 mask，shape 保持不变，离群点置 False
-    '''
-    if torch.is_tensor(points):
-        points = points.detach().cpu().numpy()
-    if torch.is_tensor(mask):
-        mask = mask.cpu().numpy()
-    selected_points = points[mask]
-    labels = DBSCAN(eps=eps, min_samples=min_samples).fit(selected_points).labels_
-    new_mask = mask.copy()
-    selected_indices = np.where(mask)[0]
-    new_mask[selected_indices[labels == -1]] = False
-    return torch.from_numpy(new_mask) if torch.is_tensor(mask) else new_mask
 
 
 if __name__ == "__main__":
@@ -197,8 +178,8 @@ if __name__ == "__main__":
     # load gaussians
     print("Loading gaussians...")
     model_path = args.model_path
-    # gaussians = load_checkpoint(model_path)
-    gaussians, classifier =load_grouping_checkpoint(model_path)
+    gaussians = load_checkpoint(model_path)
+    # gaussians, classifier =load_grouping_checkpoint(model_path)
     pipeline = PipelineParamsNoparse()
     pipeline.compute_cov3D_python = True
     background = (
@@ -250,35 +231,6 @@ if __name__ == "__main__":
         None,
         None,
     )
-    # if preprocessing_params["sim_area"] is not None:
-    #     boundary = preprocessing_params["sim_area"]
-    #     assert len(boundary) == 6
-    #     mask = torch.ones(rotated_pos.shape[0], dtype=torch.bool).to(device="cuda")
-    #     for i in range(3):
-    #         mask = torch.logical_and(mask, rotated_pos[:, i] > boundary[2 * i])
-    #         mask = torch.logical_and(mask, rotated_pos[:, i] < boundary[2 * i + 1])
-
-    if preprocessing_params.get("sim_semantic_ids", None) is not None:
-        selected_obj_ids = preprocessing_params["sim_semantic_ids"]
-        removal_thresh = 0.3
-        mask = get_semantic_mask(objects_dc, classifier, selected_obj_ids, removal_thresh)
-        # mask = suppress_outliers(mask, init_pos, eps=0.05, min_samples=10)
-
-        sim_pos = init_pos[mask, :]
-
-        unselected_pos = init_pos[~mask, :]
-        unselected_cov = init_cov[~mask, :]
-        unselected_opacity = init_opacity[~mask, :]
-        unselected_shs = init_shs[~mask, :]
-
-        rotated_pos = rotated_pos[mask, :]
-        init_cov = init_cov[mask, :]
-        init_opacity = init_opacity[mask, :]
-        init_shs = init_shs[mask, :]
-
-        sim_pos_rot = apply_rotations(sim_pos, rotation_matrices)
-        sim_pos_trans, scale_origin, original_mean_pos = transform2origin(sim_pos_rot, preprocessing_params["scale"])
-        sim_pos_centered = shift2center111(sim_pos_trans)
 
     transformed_pos, scale_origin, original_mean_pos = transform2origin(rotated_pos, preprocessing_params["scale"])
     transformed_pos = shift2center111(transformed_pos)
@@ -359,7 +311,24 @@ if __name__ == "__main__":
     )
     mpm_solver.set_parameters_dict(material_params)
 
-    bc_params = auto_set_mpm(sim_pos_centered, bc_params)
+    bc_params = auto_set_mpm(transformed_pos, bc_params)
+    '''
+    [
+        {'type': 'bounding_box'},
+        {'end_time': 1000.0,
+        'point': [1.0, 1.2551624774932861, 1.0],
+        'size': [1.0, 0.05, 0.48179298639297485],
+        'start_time': 0.0,
+        'type': 'enforce_particle_translation',
+        'velocity': [0.0, 0.2, 0.0]},
+        {'end_time': 2.2,
+        'point': [1.0, 0.7448376417160034, 1.0],
+        'size': [1.0, 0.05, 0.48179298639297485],
+        'start_time': 0.0,
+        'type': 'enforce_particle_translation',
+        'velocity': [0.0, -0.2, 0.0]}
+        ]
+    '''
 
     # Note: boundary conditions may depend on mass, so the order cannot be changed!
     set_boundary_conditions(mpm_solver, bc_params, time_params)
@@ -457,7 +426,7 @@ if __name__ == "__main__":
             cov3D = apply_inverse_cov_rotations(cov3D, rotation_matrices)
             opacity = opacity_render
             shs = shs_render
-            if preprocessing_params.get("sim_semantic_ids", None) is not None:
+            if preprocessing_params["sim_area"] is not None:
                 pos = torch.cat([pos, unselected_pos], dim=0)
                 cov3D = torch.cat([cov3D, unselected_cov], dim=0)
                 opacity = torch.cat([opacity_render, unselected_opacity], dim=0)

@@ -145,6 +145,11 @@ def decode_param_json(json_file):
     else:
         preprocessing_params["scale"] = 1.0
 
+    if "sim_semantic_ids" in sim_params.keys():
+        preprocessing_params["sim_semantic_ids"] = sim_params["sim_semantic_ids"]
+    else:
+        preprocessing_params["sim_semantic_ids"] = None
+
     if "particle_filling" in sim_params.keys():
         preprocessing_params["particle_filling"] = sim_params["particle_filling"]
         filling_params = preprocessing_params["particle_filling"]
